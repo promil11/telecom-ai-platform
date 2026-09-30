@@ -4,11 +4,10 @@
     "module": "commonjs",
     "lib": ["ES2022"],
     "outDir": "./dist",
-    "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*", "../lead-scoring-service/src/**/*", "../geo-campaign-service/src/**/*", "../campaign-orchestrator/src/**/*"]
 }
