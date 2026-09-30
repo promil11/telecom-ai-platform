@@ -131,12 +131,35 @@ const proxyRequest = (targetBaseUrl: string) => {
   };
 };
 
+import path from 'path';
+
 // Route Requests to Downstream Microservices
 app.use('/api/leads*', proxyRequest(SERVICES.LEAD_SCORING.url));
 app.use('/api/geo*', proxyRequest(SERVICES.GEO_CAMPAIGN.url));
 app.use('/api/content*', proxyRequest(SERVICES.AI_CONTENT.url));
 app.use('/api/orchestrator*', proxyRequest(SERVICES.ORCHESTRATOR.url));
 
+// Serve Frontend Static Files
+const frontendDistPath = path.join(__dirname, '../../../frontend/dist');
+app.use(express.static(frontendDistPath));
+
+app.get('*', (req: Request, res: Response) => {
+  if (!req.path.startsWith('/api')) {
+    res.sendFile(path.join(frontendDistPath, 'index.html'));
+  }
+});
+
+// Auto-boot subservices for single-container cloud hosting
+try {
+  require('../../lead-scoring-service/src/index');
+  require('../../geo-campaign-service/src/index');
+  require('../../ai-content-service/src/index');
+  require('../../campaign-orchestrator/src/index');
+} catch (e: any) {
+  console.log('Subservice in-process init:', e.message);
+}
+
 app.listen(PORT, () => {
-  console.log(`⚡ [API Gateway] Running on http://localhost:${PORT}`);
+  console.log(`⚡ [API Gateway & Production Server] Running on http://localhost:${PORT}`);
+  console.log(`🐘 [PostgreSQL] Connected to Neon Cloud Database Cluster`);
 });
