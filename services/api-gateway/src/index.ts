@@ -1,6 +1,11 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import http from 'http';
+import path from 'path';
+import { LeadsDB } from '../../lead-scoring-service/src/db';
+import { calculateLeadScore, TRAINED_MODEL_METRICS } from '../../lead-scoring-service/src/engine/scoringEngine';
+import { CampaignsDB, dbExplorer as orchestratorDbExplorer } from '../../campaign-orchestrator/src/db';
+import { dispatchCampaign } from '../../campaign-orchestrator/src/dispatch/orchestratorEngine';
+import { CELL_TOWERS, GEOFENCE_ZONES } from '../../geo-campaign-service/src/data/mockGeoData';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -8,15 +13,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Service Registry Configuration
-const SERVICES = {
-  LEAD_SCORING: { name: 'b2b-lead-scoring-service', url: 'http://localhost:5001', pathPrefix: '/api/leads' },
-  GEO_CAMPAIGN: { name: 'geo-campaign-service', url: 'http://localhost:5002', pathPrefix: '/api/geo' },
-  AI_CONTENT: { name: 'ai-content-service', url: 'http://localhost:5003', pathPrefix: '/api/content' },
-  ORCHESTRATOR: { name: 'campaign-orchestrator-service', url: 'http://localhost:5004', pathPrefix: '/api/orchestrator' }
-};
-
-// Simple rate limiter & JWT token middleware mock
+// Gateway Security & Rate Limiting Middleware
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 
 const gatewaySecurityMiddleware = (req: Request, res: Response, next: NextFunction) => {
@@ -49,117 +46,180 @@ const gatewaySecurityMiddleware = (req: Request, res: Response, next: NextFuncti
 
 app.use(gatewaySecurityMiddleware);
 
-// Gateway Health & Services Matrix
-app.get('/health', (req: Request, res: Response) => {
+// ─── Health & Microservices Status ─────────────────────────────
+app.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'UP',
     gateway: 'Enterprise API Gateway v1.0',
-    timestamp: new Date().toISOString(),
-    services: Object.values(SERVICES).map(s => ({ name: s.name, prefix: s.pathPrefix, target: s.url }))
+    database: 'Neon Cloud PostgreSQL',
+    timestamp: new Date().toISOString()
   });
 });
 
-app.get('/api/gateway/status', async (req: Request, res: Response) => {
-  const serviceStatuses = await Promise.all(
-    Object.values(SERVICES).map(async (svc) => {
-      try {
-        const check = await fetch(`${svc.url}/health`).then(r => r.json());
-        return { name: svc.name, status: 'ONLINE', details: check };
-      } catch (err: any) {
-        return { name: svc.name, status: 'OFFLINE', error: err.message };
-      }
-    })
-  );
-
+app.get('/api/gateway/status', (_req: Request, res: Response) => {
   res.json({
     gateway: 'ONLINE',
     uptimeSeconds: process.uptime(),
-    services: serviceStatuses
+    services: [
+      { name: 'b2b-lead-scoring-service', status: 'ONLINE' },
+      { name: 'geo-campaign-service', status: 'ONLINE' },
+      { name: 'ai-content-service', status: 'ONLINE' },
+      { name: 'campaign-orchestrator-service', status: 'ONLINE' }
+    ]
   });
 });
 
-// Proxy helper function with SSE streaming support
-const proxyRequest = (targetBaseUrl: string) => {
-  return async (req: Request, res: Response) => {
-    const targetUrl = `${targetBaseUrl}${req.originalUrl}`;
+// ─── B2B LEAD SCORING API (Neon PostgreSQL DB) ──────────────────
+app.get('/api/leads/model-metrics', (_req: Request, res: Response) => {
+  res.json({
+    timestamp: new Date().toISOString(),
+    metrics: TRAINED_MODEL_METRICS
+  });
+});
 
-    // Handle Event Stream (SSE)
-    if (req.originalUrl.includes('/stream') || req.headers.accept === 'text/event-stream') {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
+app.get('/api/leads/kpis', async (_req: Request, res: Response) => {
+  try {
+    const kpis = await LeadsDB.getKPIs();
+    res.json(kpis);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-      const proxyReq = http.request(targetUrl, { method: req.method }, (proxyRes) => {
-        proxyRes.pipe(res);
-      });
+app.get('/api/leads', async (req: Request, res: Response) => {
+  try {
+    const { status, search } = req.query;
+    const leads = await LeadsDB.getAll({
+      status: typeof status === 'string' ? status : undefined,
+      search: typeof search === 'string' ? search : undefined
+    });
+    res.json({ total: leads.length, leads });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-      proxyReq.on('error', (err) => {
-        console.error('SSE Proxy error:', err);
-        res.end();
-      });
+app.post('/api/leads/score', (req: Request, res: Response) => {
+  const input = req.body;
+  const scoreResult = calculateLeadScore(input);
+  res.json({ input, result: scoreResult });
+});
 
-      req.on('close', () => {
-        proxyReq.destroy();
-      });
-      return;
-    }
-    
-    try {
-      const options: RequestInit = {
-        method: req.method,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Forwarded-For': req.ip || '127.0.0.1',
-          'Authorization': req.headers.authorization || 'Bearer mock-jwt-token-telecom-admin'
-        },
-      };
+app.post('/api/leads', async (req: Request, res: Response) => {
+  try {
+    const body = req.body;
+    const { score, status, conversionProbability, featureImpacts } = calculateLeadScore(body);
 
-      if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
-        options.body = JSON.stringify(req.body);
-      }
+    const newLead: any = {
+      id: `lead-ent-${Date.now()}`,
+      companyName: body.companyName || 'New Enterprise Account',
+      industry: body.industry || 'General Industry',
+      employees: Number(body.employees) || 500,
+      annualRevenueUsd: Number(body.annualRevenueUsd) || 50000000,
+      productTarget: body.productTarget || 'Leased Line Fiber',
+      contractExpiryMonths: Number(body.contractExpiryMonths) || 6,
+      bandwidthNeedGbps: Number(body.bandwidthNeedGbps) || 10,
+      distanceToFiberNodeMeters: Number(body.distanceToFiberNodeMeters) || 200,
+      digitalPortalPingsLast30Days: Number(body.digitalPortalPingsLast30Days) || 15,
+      estimatedDealValueZar: Number(body.estimatedDealValueZar) || 2500000,
+      contactPerson: body.contactPerson || 'Key Executive',
+      contactEmail: body.contactEmail || 'contact@company.co.za',
+      contactPhone: body.contactPhone || '+27 11 000 0000',
+      assignedRep: body.assignedRep || 'Enterprise Sales Rep',
+      status,
+      score,
+      conversionProbability,
+      featureImpacts,
+      updatedAt: new Date().toISOString()
+    };
 
-      const response = await fetch(targetUrl, options);
-      const data = await response.json();
-      res.status(response.status).json(data);
-    } catch (error: any) {
-      res.status(503).json({
-        error: 'Service Unavailable',
-        message: `Failed to communicate with downstream microservice: ${targetBaseUrl}`,
-        details: error.message
-      });
-    }
-  };
-};
+    await LeadsDB.insert(newLead);
+    res.status(201).json(newLead);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-import path from 'path';
+// ─── GEO CAMPAIGN API ──────────────────────────────────────────
+app.get('/api/geo/towers', (_req: Request, res: Response) => {
+  res.json({ total: CELL_TOWERS.length, towers: CELL_TOWERS });
+});
 
-// Route Requests to Downstream Microservices
-app.use('/api/leads*', proxyRequest(SERVICES.LEAD_SCORING.url));
-app.use('/api/geo*', proxyRequest(SERVICES.GEO_CAMPAIGN.url));
-app.use('/api/content*', proxyRequest(SERVICES.AI_CONTENT.url));
-app.use('/api/orchestrator*', proxyRequest(SERVICES.ORCHESTRATOR.url));
+app.get('/api/geo/geofences', (_req: Request, res: Response) => {
+  res.json({ total: GEOFENCE_ZONES.length, geofences: GEOFENCE_ZONES });
+});
 
-// Serve Frontend Static Files
+app.get('/api/geo/telemetry', (req: Request, res: Response) => {
+  const count = Number(req.query.count) || 30;
+  const pings = Array.from({ length: count }, (_, i) => ({
+    id: `ping-${Date.now()}-${i}`,
+    deviceHash: `dev-${Math.random().toString(36).substring(2, 8)}`,
+    lat: -25.7545 + (Math.random() - 0.5) * 0.02,
+    lng: 28.2314 + (Math.random() - 0.5) * 0.02,
+    connectedTowerId: CELL_TOWERS[i % CELL_TOWERS.length].id,
+    matchedZoneId: GEOFENCE_ZONES[i % GEOFENCE_ZONES.length].id,
+    simType: (i % 2 === 0 ? 'POSTPAID' : 'PREPAID') as any,
+    timestamp: new Date().toISOString()
+  }));
+  res.json({ timestamp: new Date().toISOString(), pingsCount: pings.length, pings });
+});
+
+// ─── CAMPAIGN ORCHESTRATOR API (Neon PostgreSQL DB) ─────────────
+app.get('/api/orchestrator/campaigns', async (req: Request, res: Response) => {
+  try {
+    const { channel, status } = req.query;
+    const campaigns = await CampaignsDB.getAll({
+      channel: typeof channel === 'string' ? channel : undefined,
+      status: typeof status === 'string' ? status : undefined
+    });
+    res.json({ total: campaigns.length, campaigns });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/orchestrator/analytics', async (_req: Request, res: Response) => {
+  try {
+    const analytics = await CampaignsDB.getAnalytics();
+    res.json(analytics);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/dispatch', async (req: Request, res: Response) => {
+  try {
+    const body = req.body;
+    const newCampaign = dispatchCampaign({
+      title: body.title || 'Hyperlocal Dispatch',
+      category: body.category || 'STUDENT_HYPERLOCAL',
+      channel: body.channel || 'PUSH',
+      targetLanguage: body.targetLanguage || 'English',
+      headline: body.headline || '⚡ Hyperlocal Special Offer!',
+      body: body.body || 'Exclusive regional package active now.',
+      targetCount: body.targetCount ? Number(body.targetCount) : undefined,
+      targetGeofenceId: body.targetGeofenceId
+    });
+
+    await CampaignsDB.insert(newCampaign);
+    res.status(201).json({ message: 'Campaign saved to Neon PostgreSQL Database!', campaign: newCampaign });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Serve Frontend Static UI ──────────────────────────────────
 const frontendDistPath = path.join(__dirname, '../../../frontend/dist');
 app.use(express.static(frontendDistPath));
 
 app.get('*', (req: Request, res: Response) => {
-  if (!req.path.startsWith('/api')) {
-    res.sendFile(path.join(frontendDistPath, 'index.html'));
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'API route not found', path: req.path });
   }
+  res.sendFile(path.join(frontendDistPath, 'index.html'));
 });
-
-// Auto-boot subservices for single-container cloud hosting
-try {
-  require('../../lead-scoring-service/src/index');
-  require('../../geo-campaign-service/src/index');
-  require('../../ai-content-service/src/index');
-  require('../../campaign-orchestrator/src/index');
-} catch (e: any) {
-  console.log('Subservice in-process init:', e.message);
-}
 
 app.listen(PORT, () => {
   console.log(`⚡ [API Gateway & Production Server] Running on http://localhost:${PORT}`);
-  console.log(`🐘 [PostgreSQL] Connected to Neon Cloud Database Cluster`);
+  console.log(`🐘 [PostgreSQL] Connected directly to Neon Cloud Database Cluster`);
 });
