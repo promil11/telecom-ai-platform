@@ -5,7 +5,9 @@
   "private": true,
   "scripts": {
     "install:all": "npm install --prefix services/api-gateway && npm install --prefix services/lead-scoring-service && npm install --prefix services/geo-campaign-service && npm install --prefix services/ai-content-service && npm install --prefix services/campaign-orchestrator && npm install --prefix frontend",
+    "build": "cd frontend && npm install && npm run build",
     "start": "concurrently -k -n gateway,scoring,geo,content,orchestrator,frontend -c cyan,indigo,blue,purple,emerald,yellow \"npm run start:gateway\" \"npm run start:lead-scoring\" \"npm run start:geo-campaign\" \"npm run start:ai-content\" \"npm run start:orchestrator\" \"npm run start:frontend\"",
+    "start:render": "npx serve -s frontend/dist -l $PORT",
     "start:gateway": "cd services/api-gateway && npm start",
     "start:lead-scoring": "cd services/lead-scoring-service && npm start",
     "start:geo-campaign": "cd services/geo-campaign-service && npm start",
