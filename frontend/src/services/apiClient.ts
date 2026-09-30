@@ -1,6 +1,6 @@
 import { EnterpriseLead, LeadKpis, CellTower, GeofenceZone, TelemetryPing, GeneratedVariant, Campaign, MicroserviceStatus } from '../types';
 
-const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || '/api';
+const API_BASE = '/api';
 
 // Helper fetcher with graceful fallback to demo mock data if microservices offline
 async function fetchWithFallback<T>(url: string, fallbackData: T): Promise<T> {
@@ -118,7 +118,7 @@ export const ApiClient = {
         try {
           const parsed = JSON.parse(e.data);
           onPing(parsed);
-        } catch (err) {}
+        } catch (err) { }
       });
 
       if (onBreach) {
@@ -126,7 +126,7 @@ export const ApiClient = {
           try {
             const parsed = JSON.parse(e.data);
             onBreach(parsed);
-          } catch (err) {}
+          } catch (err) { }
         });
       }
 
@@ -135,7 +135,7 @@ export const ApiClient = {
       };
     } catch (err) {
       console.warn('EventSource connection failed:', err);
-      return () => {};
+      return () => { };
     }
   },
 
