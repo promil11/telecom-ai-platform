@@ -1,0 +1,31 @@
+{
+  "name": "telecom-sales-marketing-platform",
+  "version": "1.0.0",
+  "description": "Enterprise Telecommunications Sales & Marketing Microservices Ecosystem",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install --prefix services/api-gateway && npm install --prefix services/lead-scoring-service && npm install --prefix services/geo-campaign-service && npm install --prefix services/ai-content-service && npm install --prefix services/campaign-orchestrator && npm install --prefix frontend",
+    "start": "concurrently -k -n gateway,scoring,geo,content,orchestrator,frontend -c cyan,indigo,blue,purple,emerald,yellow \"npm run start:gateway\" \"npm run start:lead-scoring\" \"npm run start:geo-campaign\" \"npm run start:ai-content\" \"npm run start:orchestrator\" \"npm run start:frontend\"",
+    "start:gateway": "cd services/api-gateway && npm start",
+    "start:lead-scoring": "cd services/lead-scoring-service && npm start",
+    "start:geo-campaign": "cd services/geo-campaign-service && npm start",
+    "start:ai-content": "cd services/ai-content-service && npm start",
+    "start:orchestrator": "cd services/campaign-orchestrator && npm start",
+    "start:frontend": "cd frontend && npm run dev",
+    "build:all": "npm run build --prefix services/api-gateway && npm run build --prefix services/lead-scoring-service && npm run build --prefix services/geo-campaign-service && npm run build --prefix services/ai-content-service && npm run build --prefix services/campaign-orchestrator && npm run build --prefix frontend"
+  },
+  "keywords": [
+    "telecom",
+    "b2b-sales",
+    "lead-scoring",
+    "hyperlocal",
+    "geofencing",
+    "ai-content",
+    "microservices"
+  ],
+  "author": "Enterprise Architecture Team",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  }
+}
