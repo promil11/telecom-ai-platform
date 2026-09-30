@@ -1,6 +1,6 @@
 import { EnterpriseLead, LeadKpis, CellTower, GeofenceZone, TelemetryPing, GeneratedVariant, Campaign, MicroserviceStatus } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || '/api';
 
 // Helper fetcher with graceful fallback to demo mock data if microservices offline
 async function fetchWithFallback<T>(url: string, fallbackData: T): Promise<T> {
